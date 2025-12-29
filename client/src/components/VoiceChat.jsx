@@ -14,6 +14,7 @@ const VoiceChat = () => {
   const messagesEndRef = useRef(null);
   const silenceTimerRef = useRef(null);
   const finalTranscriptRef = useRef('');
+  const isListeningRef = useRef(false);
 
   useEffect(() => {
     // Initialize Gemini AI
@@ -64,12 +65,36 @@ const VoiceChat = () => {
       };
 
       recognitionRef.current.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        setIsListening(false);
+        // Ignore "no-speech" errors as they're normal when user pauses
+        if (event.error === 'no-speech') {
+          console.log('No speech detected, continuing to listen...');
+          // Don't stop listening, just continue
+          return;
+        }
+
+        // For other errors, log and handle them
+        if (event.error !== 'aborted') {
+          console.error('Speech recognition error:', event.error);
+        }
+
+        // Only stop listening for actual errors (not no-speech or aborted)
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
+          setIsListening(false);
+        }
       };
 
       recognitionRef.current.onend = () => {
-        setIsListening(false);
+        // If we were listening and it ended unexpectedly, restart it
+        if (isListeningRef.current && recognitionRef.current) {
+          try {
+            recognitionRef.current.start();
+          } catch (e) {
+            console.log('Recognition already started');
+          }
+        } else {
+          setIsListening(false);
+          isListeningRef.current = false;
+        }
       };
     }
 
@@ -88,6 +113,7 @@ const VoiceChat = () => {
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
+      isListeningRef.current = false;
 
       // Clear timer and send any remaining text
       if (silenceTimerRef.current) {
@@ -101,6 +127,7 @@ const VoiceChat = () => {
     } else {
       recognitionRef.current?.start();
       setIsListening(true);
+      isListeningRef.current = true;
       setTranscript('');
       finalTranscriptRef.current = '';
     }
