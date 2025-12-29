@@ -142,8 +142,11 @@ const VoiceChat = () => {
     setTranscript('');
 
     try {
+      // Try different model names based on SDK version
+      let modelName = 'gemini-1.5-flash-latest';
+
       const model = genAI.current.getGenerativeModel({
-        model: 'gemini-pro',
+        model: modelName,
         generationConfig: {
           temperature: 0.7,
           maxOutputTokens: 1000,
