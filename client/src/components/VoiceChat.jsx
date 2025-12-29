@@ -17,25 +17,35 @@ const VoiceChat = () => {
   const finalTranscriptRef = useRef('');
   const isListeningRef = useRef(false);
 
-  /* -------------------------------- INIT -------------------------------- */
+  /* ---------------------------- INITIALIZATION ---------------------------- */
 
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
     if (!apiKey) {
-      console.error('VITE_GEMINI_API_KEY not found');
+      console.error('VITE_GEMINI_API_KEY is missing');
       return;
     }
 
     genAIRef.current = new GoogleGenerativeAI(apiKey);
+
     modelRef.current = genAIRef.current.getGenerativeModel({
       model: 'gemini-1.5-flash',
+      generationConfig: {
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+      },
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUAL_CONTENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ],
     });
 
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition =
-        window.SpeechRecognition || window.webkitSpeechRecognition;
+    if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const recognition = new SR();
 
-      const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
@@ -55,11 +65,10 @@ const VoiceChat = () => {
           clearTimeout(silenceTimerRef.current);
 
           silenceTimerRef.current = setTimeout(() => {
-            if (finalTranscriptRef.current.trim()) {
-              handleSendMessage(finalTranscriptRef.current.trim());
-              finalTranscriptRef.current = '';
-              setTranscript('');
-            }
+            const text = finalTranscriptRef.current.trim();
+            if (text.length > 1) handleSendMessage(text);
+            finalTranscriptRef.current = '';
+            setTranscript('');
           }, 2000);
         }
 
@@ -68,7 +77,7 @@ const VoiceChat = () => {
 
       recognition.onerror = (e) => {
         if (e.error !== 'no-speech' && e.error !== 'aborted') {
-          console.error('Speech error:', e.error);
+          console.error('Speech error:', e);
           setIsListening(false);
           isListeningRef.current = false;
         }
@@ -92,7 +101,7 @@ const VoiceChat = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, corrections]);
 
-  /* ------------------------------ CONTROLS ------------------------------- */
+  /* ---------------------------- VOICE CONTROL ---------------------------- */
 
   const toggleListening = () => {
     if (isListening) {
@@ -101,10 +110,10 @@ const VoiceChat = () => {
       isListeningRef.current = false;
       clearTimeout(silenceTimerRef.current);
 
-      if (finalTranscriptRef.current.trim()) {
-        handleSendMessage(finalTranscriptRef.current.trim());
-        finalTranscriptRef.current = '';
-      }
+      const text = finalTranscriptRef.current.trim();
+      if (text.length > 1) handleSendMessage(text);
+
+      finalTranscriptRef.current = '';
       setTranscript('');
     } else {
       recognitionRef.current?.start();
@@ -115,37 +124,43 @@ const VoiceChat = () => {
     }
   };
 
-  /* ------------------------------ GEMINI CALL ----------------------------- */
+  /* ---------------------------- GEMINI CALL ---------------------------- */
 
   const handleSendMessage = async (text) => {
-    if (!text || isProcessing) return;
+    if (!text || text.length < 2 || isProcessing) return;
 
     setIsProcessing(true);
     setMessages((p) => [...p, { role: 'user', content: text }]);
 
     const prompt = `
-You are an English teacher helping a student practice speaking English.
+You are an English teacher helping a student practice spoken English.
 
 Student said:
 "${text}"
 
-Respond ONLY in valid JSON.
+Respond ONLY in valid JSON:
 
 {
-  "errors": [{"error":"", "correction":"", "type":"grammar"}],
-  "feedback":"encouraging message",
-  "response":"conversation reply",
-  "followUp":"question"
+  "errors": [
+    { "error": "issue", "correction": "fix", "type": "grammar" }
+  ],
+  "feedback": "encouraging feedback",
+  "response": "teacher reply",
+  "followUp": "question to continue"
 }
 `;
 
     try {
-      const result = await modelRef.current.generateContent(prompt);
+      const result = await modelRef.current.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      });
+
       const raw = result.response.text();
+      console.log('Gemini RAW:', raw);
 
       let parsed;
       try {
-        parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+        parsed = JSON.parse(raw);
       } catch {
         parsed = {
           errors: [],
@@ -175,11 +190,14 @@ Respond ONLY in valid JSON.
 
       speakText(assistantText);
     } catch (e) {
+      console.error('Gemini error:', e);
       setMessages((p) => [
         ...p,
-        { role: 'assistant', content: 'Sorry, something went wrong.' },
+        {
+          role: 'assistant',
+          content: 'Teacher is temporarily unavailable. Please try again.',
+        },
       ]);
-      console.error(e);
     } finally {
       setIsProcessing(false);
     }
@@ -202,7 +220,7 @@ Respond ONLY in valid JSON.
     window.speechSynthesis.speak(u);
   };
 
-  /* -------------------------------- UI ---------------------------------- */
+  /* ------------------------------- UI ------------------------------- */
 
   return (
     <div className="voice-chat-container">
@@ -218,10 +236,10 @@ Respond ONLY in valid JSON.
         <div ref={messagesEndRef} />
       </div>
 
-      {transcript && <p><em>{transcript}</em></p>}
+      {transcript && <em>{transcript}</em>}
 
       <button onClick={toggleListening} disabled={isProcessing}>
-        {isListening ? 'Stop' : 'Speak'}
+        {isListening ? 'Stop Recording' : 'Start Speaking'}
       </button>
 
       {isSpeaking && <p>Speaking…</p>}
