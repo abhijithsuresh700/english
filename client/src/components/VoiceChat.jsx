@@ -10,52 +10,50 @@ const VoiceChat = () => {
   const [isProcessing, setIsProcessing] = useState(false);
 
   const recognitionRef = useRef(null);
-  const genAI = useRef(null);
+  const genAIRef = useRef(null);
+  const modelRef = useRef(null);
   const messagesEndRef = useRef(null);
   const silenceTimerRef = useRef(null);
   const finalTranscriptRef = useRef('');
   const isListeningRef = useRef(false);
 
+  /* -------------------------------- INIT -------------------------------- */
+
   useEffect(() => {
-    // Initialize Gemini AI with v1 API
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    console.log('API Key loaded:', apiKey ? 'Yes' : 'No');
     if (!apiKey) {
-      console.error('VITE_GEMINI_API_KEY is not set!');
+      console.error('VITE_GEMINI_API_KEY not found');
+      return;
     }
-    genAI.current = new GoogleGenerativeAI(apiKey);
 
-    // Initialize Speech Recognition
+    genAIRef.current = new GoogleGenerativeAI(apiKey);
+    modelRef.current = genAIRef.current.getGenerativeModel({
+      model: 'gemini-1.5-flash',
+    });
+
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
 
-      recognitionRef.current.onresult = (event) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        let final = '';
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript + ' ';
-          } else {
-            interimTranscript += transcript;
-          }
+          const t = event.results[i][0].transcript;
+          if (event.results[i].isFinal) final += t + ' ';
+          else interim += t;
         }
 
-        // Accumulate final transcripts
-        if (finalTranscript) {
-          finalTranscriptRef.current += finalTranscript;
+        if (final) {
+          finalTranscriptRef.current += final;
+          clearTimeout(silenceTimerRef.current);
 
-          // Clear any existing timer
-          if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current);
-          }
-
-          // Wait for 2 seconds of silence before sending
           silenceTimerRef.current = setTimeout(() => {
             if (finalTranscriptRef.current.trim()) {
               handleSendMessage(finalTranscriptRef.current.trim());
@@ -65,65 +63,44 @@ const VoiceChat = () => {
           }, 2000);
         }
 
-        // Update display with accumulated final + current interim
-        setTranscript(finalTranscriptRef.current + interimTranscript);
+        setTranscript(finalTranscriptRef.current + interim);
       };
 
-      recognitionRef.current.onerror = (event) => {
-        // Ignore "no-speech" errors as they're normal when user pauses
-        if (event.error === 'no-speech') {
-          console.log('No speech detected, continuing to listen...');
-          // Don't stop listening, just continue
-          return;
-        }
-
-        // For other errors, log and handle them
-        if (event.error !== 'aborted') {
-          console.error('Speech recognition error:', event.error);
-        }
-
-        // Only stop listening for actual errors (not no-speech or aborted)
-        if (event.error !== 'no-speech' && event.error !== 'aborted') {
-          setIsListening(false);
-        }
-      };
-
-      recognitionRef.current.onend = () => {
-        // If we were listening and it ended unexpectedly, restart it
-        if (isListeningRef.current && recognitionRef.current) {
-          try {
-            recognitionRef.current.start();
-          } catch (e) {
-            console.log('Recognition already started');
-          }
-        } else {
+      recognition.onerror = (e) => {
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          console.error('Speech error:', e.error);
           setIsListening(false);
           isListeningRef.current = false;
         }
       };
+
+      recognition.onend = () => {
+        if (isListeningRef.current) {
+          try {
+            recognition.start();
+          } catch {}
+        }
+      };
+
+      recognitionRef.current = recognition;
     }
 
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-    };
+    return () => recognitionRef.current?.stop();
   }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, corrections]);
 
+  /* ------------------------------ CONTROLS ------------------------------- */
+
   const toggleListening = () => {
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
       isListeningRef.current = false;
+      clearTimeout(silenceTimerRef.current);
 
-      // Clear timer and send any remaining text
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current);
-      }
       if (finalTranscriptRef.current.trim()) {
         handleSendMessage(finalTranscriptRef.current.trim());
         finalTranscriptRef.current = '';
@@ -133,242 +110,121 @@ const VoiceChat = () => {
       recognitionRef.current?.start();
       setIsListening(true);
       isListeningRef.current = true;
-      setTranscript('');
       finalTranscriptRef.current = '';
+      setTranscript('');
     }
   };
 
+  /* ------------------------------ GEMINI CALL ----------------------------- */
+
   const handleSendMessage = async (text) => {
-    if (!text.trim() || isProcessing) return;
+    if (!text || isProcessing) return;
 
     setIsProcessing(true);
-    const userMessage = { role: 'user', content: text };
-    setMessages(prev => [...prev, userMessage]);
-    setTranscript('');
+    setMessages((p) => [...p, { role: 'user', content: text }]);
+
+    const prompt = `
+You are an English teacher helping a student practice speaking English.
+
+Student said:
+"${text}"
+
+Respond ONLY in valid JSON.
+
+{
+  "errors": [{"error":"", "correction":"", "type":"grammar"}],
+  "feedback":"encouraging message",
+  "response":"conversation reply",
+  "followUp":"question"
+}
+`;
 
     try {
-      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-      const apiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${apiKey}`;
+      const result = await modelRef.current.generateContent(prompt);
+      const raw = result.response.text();
 
-      const prompt = `You are an English teacher helping a student practice speaking English.
-The student just said: "${text}"
-
-Your response should:
-1. First, identify any grammar, vocabulary, or pronunciation errors (if any)
-2. Provide corrections in a friendly, encouraging way
-3. Continue the conversation naturally to keep them practicing
-4. Ask a follow-up question to encourage more speaking
-
-IMPORTANT: You must respond with ONLY valid JSON, no markdown formatting, no code blocks.
-
-Format your response as JSON:
-{
-  "errors": [{"error": "specific error", "correction": "how to fix it", "type": "grammar"}],
-  "feedback": "encouraging feedback message",
-  "response": "your conversational response",
-  "followUp": "a question to continue the conversation"
-}
-
-If there are no errors, make the errors array empty but still provide engaging conversation.`;
-
-      const requestBody = {
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
-        }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1000,
-        }
-      };
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
-      }
-
-      const data = await response.json();
-      const responseText = data.candidates[0].content.parts[0].text;
-
-      console.log('Gemini raw response:', responseText);
-
-      // Try to parse JSON response
-      let aiResponse;
+      let parsed;
       try {
-        // Remove markdown code blocks if present
-        const cleanedResponse = responseText.replace(/```json\n?|\n?```/g, '').trim();
-        console.log('Cleaned response:', cleanedResponse);
-        aiResponse = JSON.parse(cleanedResponse);
-      } catch (e) {
-        console.error('JSON parsing failed:', e);
-        // Fallback if JSON parsing fails
-        aiResponse = {
+        parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+      } catch {
+        parsed = {
           errors: [],
           feedback: '',
-          response: responseText,
-          followUp: ''
+          response: raw,
+          followUp: '',
         };
       }
 
-      // Add AI message
-      const assistantMessage = {
-        role: 'assistant',
-        content: `${aiResponse.feedback ? aiResponse.feedback + '\n\n' : ''}${aiResponse.response}${aiResponse.followUp ? '\n\n' + aiResponse.followUp : ''}`
-      };
-      setMessages(prev => [...prev, assistantMessage]);
+      const assistantText =
+        `${parsed.feedback ? parsed.feedback + '\n\n' : ''}` +
+        `${parsed.response}` +
+        `${parsed.followUp ? '\n\n' + parsed.followUp : ''}`;
 
-      // Add corrections if any
-      if (aiResponse.errors && aiResponse.errors.length > 0) {
-        setCorrections(prev => [...prev, {
-          userText: text,
-          errors: aiResponse.errors,
-          timestamp: new Date().toLocaleTimeString()
-        }]);
+      setMessages((p) => [...p, { role: 'assistant', content: assistantText }]);
+
+      if (parsed.errors?.length) {
+        setCorrections((p) => [
+          ...p,
+          {
+            userText: text,
+            errors: parsed.errors,
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ]);
       }
 
-      // Speak the response
-      speakText(assistantMessage.content);
-
-    } catch (error) {
-      console.error('Error calling Gemini API:', error);
-      console.error('Error details:', error.message);
-      console.error('Full error:', JSON.stringify(error, null, 2));
-
-      const errorMessage = {
-        role: 'assistant',
-        content: `Sorry, I encountered an error: ${error.message || 'Please try again.'}`
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      speakText(assistantText);
+    } catch (e) {
+      setMessages((p) => [
+        ...p,
+        { role: 'assistant', content: 'Sorry, something went wrong.' },
+      ]);
+      console.error(e);
     } finally {
       setIsProcessing(false);
     }
   };
 
+  /* ---------------------------- TEXT TO SPEECH ---------------------------- */
+
   const speakText = (text) => {
-    if ('speechSynthesis' in window) {
-      // Cancel any ongoing speech
-      window.speechSynthesis.cancel();
+    if (!('speechSynthesis' in window)) return;
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'en-US';
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-US';
+    u.rate = 0.9;
 
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
+    u.onstart = () => setIsSpeaking(true);
+    u.onend = () => setIsSpeaking(false);
+    u.onerror = () => setIsSpeaking(false);
 
-      window.speechSynthesis.speak(utterance);
-    }
+    window.speechSynthesis.speak(u);
   };
 
-  const clearHistory = () => {
-    setMessages([]);
-    setCorrections([]);
-  };
+  /* -------------------------------- UI ---------------------------------- */
 
   return (
     <div className="voice-chat-container">
-      <div className="chat-header">
-        <h1>English Learning Assistant</h1>
-        <p>Practice speaking English and get real-time feedback</p>
+      <h1>English Learning Assistant</h1>
+
+      <div className="messages">
+        {messages.map((m, i) => (
+          <div key={i} className={m.role}>
+            <strong>{m.role === 'user' ? 'You' : 'Teacher'}:</strong>
+            <p>{m.content}</p>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
       </div>
 
-      <div className="main-content">
-        <div className="chat-section">
-          <div className="messages-container">
-            {messages.length === 0 ? (
-              <div className="welcome-message">
-                <h2>Welcome!</h2>
-                <p>Click the microphone button and start speaking in English.</p>
-                <p>I'll help you improve your grammar, vocabulary, and pronunciation.</p>
-              </div>
-            ) : (
-              messages.map((msg, idx) => (
-                <div key={idx} className={`message ${msg.role}`}>
-                  <div className="message-content">
-                    <strong>{msg.role === 'user' ? 'You' : 'Teacher'}:</strong>
-                    <p>{msg.content}</p>
-                  </div>
-                </div>
-              ))
-            )}
-            {isProcessing && (
-              <div className="message assistant">
-                <div className="message-content">
-                  <strong>Teacher:</strong>
-                  <p className="typing-indicator">Thinking...</p>
-                </div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
+      {transcript && <p><em>{transcript}</em></p>}
 
-          <div className="input-section">
-            <div className="transcript-display">
-              {transcript && <p><em>{transcript}</em></p>}
-            </div>
-            <div className="controls">
-              <button
-                className={`mic-button ${isListening ? 'listening' : ''}`}
-                onClick={toggleListening}
-                disabled={isProcessing}
-              >
-                <span className="mic-icon">{isListening ? '⏸️' : '🎤'}</span>
-                <span>{isListening ? 'Stop Recording' : 'Start Speaking'}</span>
-              </button>
-              {messages.length > 0 && (
-                <button className="clear-button" onClick={clearHistory}>
-                  Clear History
-                </button>
-              )}
-            </div>
-            {isSpeaking && <div className="speaking-indicator">🔊 Speaking...</div>}
-          </div>
-        </div>
+      <button onClick={toggleListening} disabled={isProcessing}>
+        {isListening ? 'Stop' : 'Speak'}
+      </button>
 
-        <div className="corrections-section">
-          <h3>Corrections & Feedback</h3>
-          {corrections.length === 0 ? (
-            <div className="no-corrections">
-              <p>Your corrections will appear here</p>
-            </div>
-          ) : (
-            <div className="corrections-list">
-              {corrections.map((correction, idx) => (
-                <div key={idx} className="correction-item">
-                  <div className="correction-header">
-                    <span className="time">{correction.timestamp}</span>
-                  </div>
-                  <div className="user-text">
-                    <strong>You said:</strong> "{correction.userText}"
-                  </div>
-                  <div className="errors">
-                    {correction.errors.map((error, errorIdx) => (
-                      <div key={errorIdx} className={`error-detail ${error.type}`}>
-                        <span className="error-type">{error.type}</span>
-                        <div className="error-info">
-                          <div><strong>Issue:</strong> {error.error}</div>
-                          <div><strong>Correction:</strong> {error.correction}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      {isSpeaking && <p>Speaking…</p>}
     </div>
   );
 };
