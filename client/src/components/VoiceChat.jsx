@@ -143,7 +143,7 @@ const VoiceChat = () => {
 
     try {
       const model = genAI.current.getGenerativeModel({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-pro',
         generationConfig: {
           temperature: 0.7,
           maxOutputTokens: 1000,
