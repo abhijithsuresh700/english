@@ -17,8 +17,13 @@ const VoiceChat = () => {
   const isListeningRef = useRef(false);
 
   useEffect(() => {
-    // Initialize Gemini AI
-    genAI.current = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+    // Initialize Gemini AI with v1 API
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    console.log('API Key loaded:', apiKey ? 'Yes' : 'No');
+    if (!apiKey) {
+      console.error('VITE_GEMINI_API_KEY is not set!');
+    }
+    genAI.current = new GoogleGenerativeAI(apiKey);
 
     // Initialize Speech Recognition
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -142,16 +147,8 @@ const VoiceChat = () => {
     setTranscript('');
 
     try {
-      // Try different model names based on SDK version
-      let modelName = 'gemini-1.5-flash-latest';
-
-      const model = genAI.current.getGenerativeModel({
-        model: modelName,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1000,
-        }
-      });
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      const apiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
       const prompt = `You are an English teacher helping a student practice speaking English.
 The student just said: "${text}"
@@ -174,8 +171,33 @@ Format your response as JSON:
 
 If there are no errors, make the errors array empty but still provide engaging conversation.`;
 
-      const result = await model.generateContent(prompt);
-      const responseText = result.response.text();
+      const requestBody = {
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1000,
+        }
+      };
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      const responseText = data.candidates[0].content.parts[0].text;
 
       console.log('Gemini raw response:', responseText);
 
