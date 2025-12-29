@@ -28,16 +28,16 @@ const VoiceChat = () => {
 
     genAIRef.current = new GoogleGenerativeAI(apiKey);
 
+    // Try gemini-pro which is more widely available
     modelRef.current = genAIRef.current.getGenerativeModel({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-pro',
       generationConfig: {
         temperature: 0.7,
-        responseMimeType: 'application/json',
       },
       safetySettings: [
         { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
         { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_SEXUAL_CONTENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
         { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
       ],
     });
@@ -191,11 +191,13 @@ Respond ONLY in valid JSON:
       speakText(assistantText);
     } catch (e) {
       console.error('Gemini error:', e);
+      console.error('Error message:', e.message);
+      console.error('Error details:', JSON.stringify(e, null, 2));
       setMessages((p) => [
         ...p,
         {
           role: 'assistant',
-          content: 'Teacher is temporarily unavailable. Please try again.',
+          content: `Error: ${e.message || 'Teacher is temporarily unavailable. Please try again.'}`,
         },
       ]);
     } finally {
