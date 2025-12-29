@@ -12,6 +12,8 @@ const VoiceChat = () => {
   const recognitionRef = useRef(null);
   const genAI = useRef(null);
   const messagesEndRef = useRef(null);
+  const silenceTimerRef = useRef(null);
+  const finalTranscriptRef = useRef('');
 
   useEffect(() => {
     // Initialize Gemini AI
@@ -38,12 +40,27 @@ const VoiceChat = () => {
           }
         }
 
+        // Accumulate final transcripts
         if (finalTranscript) {
-          setTranscript(finalTranscript.trim());
-          handleSendMessage(finalTranscript.trim());
-        } else {
-          setTranscript(interimTranscript);
+          finalTranscriptRef.current += finalTranscript;
+
+          // Clear any existing timer
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+          }
+
+          // Wait for 2 seconds of silence before sending
+          silenceTimerRef.current = setTimeout(() => {
+            if (finalTranscriptRef.current.trim()) {
+              handleSendMessage(finalTranscriptRef.current.trim());
+              finalTranscriptRef.current = '';
+              setTranscript('');
+            }
+          }, 2000);
         }
+
+        // Update display with accumulated final + current interim
+        setTranscript(finalTranscriptRef.current + interimTranscript);
       };
 
       recognitionRef.current.onerror = (event) => {
@@ -71,10 +88,21 @@ const VoiceChat = () => {
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
+
+      // Clear timer and send any remaining text
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+      }
+      if (finalTranscriptRef.current.trim()) {
+        handleSendMessage(finalTranscriptRef.current.trim());
+        finalTranscriptRef.current = '';
+      }
+      setTranscript('');
     } else {
       recognitionRef.current?.start();
       setIsListening(true);
       setTranscript('');
+      finalTranscriptRef.current = '';
     }
   };
 
@@ -87,7 +115,13 @@ const VoiceChat = () => {
     setTranscript('');
 
     try {
-      const model = genAI.current.getGenerativeModel({ model: 'gemini-pro' });
+      const model = genAI.current.getGenerativeModel({
+        model: 'gemini-1.5-flash',
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1000,
+        }
+      });
 
       const prompt = `You are an English teacher helping a student practice speaking English.
 The student just said: "${text}"
@@ -98,9 +132,11 @@ Your response should:
 3. Continue the conversation naturally to keep them practicing
 4. Ask a follow-up question to encourage more speaking
 
+IMPORTANT: You must respond with ONLY valid JSON, no markdown formatting, no code blocks.
+
 Format your response as JSON:
 {
-  "errors": [{"error": "specific error", "correction": "how to fix it", "type": "grammar|vocabulary|pronunciation"}],
+  "errors": [{"error": "specific error", "correction": "how to fix it", "type": "grammar"}],
   "feedback": "encouraging feedback message",
   "response": "your conversational response",
   "followUp": "a question to continue the conversation"
@@ -111,13 +147,17 @@ If there are no errors, make the errors array empty but still provide engaging c
       const result = await model.generateContent(prompt);
       const responseText = result.response.text();
 
+      console.log('Gemini raw response:', responseText);
+
       // Try to parse JSON response
       let aiResponse;
       try {
         // Remove markdown code blocks if present
         const cleanedResponse = responseText.replace(/```json\n?|\n?```/g, '').trim();
+        console.log('Cleaned response:', cleanedResponse);
         aiResponse = JSON.parse(cleanedResponse);
       } catch (e) {
+        console.error('JSON parsing failed:', e);
         // Fallback if JSON parsing fails
         aiResponse = {
           errors: [],
@@ -148,9 +188,12 @@ If there are no errors, make the errors array empty but still provide engaging c
 
     } catch (error) {
       console.error('Error calling Gemini API:', error);
+      console.error('Error details:', error.message);
+      console.error('Full error:', JSON.stringify(error, null, 2));
+
       const errorMessage = {
         role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.'
+        content: `Sorry, I encountered an error: ${error.message || 'Please try again.'}`
       };
       setMessages(prev => [...prev, errorMessage]);
     } finally {
